@@ -1,32 +1,25 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "IAM: usuario programatico opcional con permisos minimos sobre un bucket S3."
+Description: "IAM: optional programmatic user with minimal S3 access."
 
 Parameters:
   S3BucketName:
     Type: String
-    Description: "Bucket donde el user podra leer/escribir."
+    Description: "Bucket name for RW access."
   CreateProgrammaticUser:
     Type: String
     AllowedValues: ["true","false"]
     Default: "true"
-    Description: "Si 'true', crea el usuario IAM."
   CreateAccessKey:
     Type: String
     AllowedValues: ["true","false"]
     Default: "true"
-    Description: "Si 'true' y hay usuario, crea AccessKey/Secret."
-  UserName:
-    Type: String
-    Default: !Sub "${AWS::StackName}-user"
-    Description: "Nombre del usuario (por defecto deriva del nombre del stack)."
 
 Conditions:
   DoCreateUser: !Equals [!Ref CreateProgrammaticUser, "true"]
-  DoCreateKey: !And [!Condition DoCreateUser, !Equals [!Ref CreateAccessKey, "true"]]
-  HasBucket:   !Not [!Equals [!Ref S3BucketName, ""]]
+  DoCreateKey:  !And [!Condition DoCreateUser, !Equals [!Ref CreateAccessKey, "true"]]
+  HasBucket:    !Not [!Equals [!Ref S3BucketName, ""]]
 
 Resources:
-  # Politica administrada con permisos minimos sobre el bucket indicado
   S3RWPolicy:
     Condition: HasBucket
     Type: AWS::IAM::ManagedPolicy
@@ -37,10 +30,7 @@ Resources:
         Statement:
           - Sid: S3RW
             Effect: Allow
-            Action:
-              - s3:GetObject
-              - s3:PutObject
-              - s3:ListBucket
+            Action: [ "s3:GetObject", "s3:PutObject", "s3:ListBucket" ]
             Resource:
               - !Sub "arn:aws:s3:::${S3BucketName}"
               - !Sub "arn:aws:s3:::${S3BucketName}/*"
@@ -49,7 +39,7 @@ Resources:
     Condition: DoCreateUser
     Type: AWS::IAM::User
     Properties:
-      UserName: !Ref UserName
+      UserName: !Sub "${AWS::StackName}-user"
       Path: "/"
       ManagedPolicyArns:
         - !If [HasBucket, !Ref S3RWPolicy, !Ref "AWS::NoValue"]
@@ -63,10 +53,7 @@ Resources:
 Outputs:
   ProgrammaticUser:
     Value: !If [ DoCreateUser, !Ref LabUser, "not-created" ]
-    Description: "Nombre del usuario (si se creo)."
   AccessKeyId:
     Value: !If [ DoCreateKey, !Ref LabUserAccessKey, "not-created" ]
-    Description: "Access Key ID (evita imprimir en logs)."
   SecretAccessKey:
     Value: !If [ DoCreateKey, !GetAtt LabUserAccessKey.SecretAccessKey, "not-created" ]
-    Description: "Secret (se muestra solo en creacion; evita imprimir en logs)."
