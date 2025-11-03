@@ -1,138 +1,55 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "S3 Bucket for Clouxter Test (hardened + options)"
+Description: "Bucket S3 con cifrado, bloqueo público y Lifecycle a STANDARD_IA a los 30 días."
 
 Parameters:
   BucketName:
     Type: String
-    Default: ""
-    Description: "(Opcional) Nombre del bucket (único globalmente)"
-  VpcEndpointId:
-    Type: String
-    Default: ""
-    Description: "(Opcional) VPCE para restringir acceso al bucket"
-  EnableIntelligentTiering:
-    Type: String
-    Default: "false"
-    AllowedValues: ["true", "false"]
-  EnableArchive:
-    Type: String
-    Default: "false"
-    AllowedValues: ["true", "false"]
-
-Conditions:
-  UseProvidedName: !Not [!Equals [!Ref BucketName, ""]]
-  UseVpce:         !Not [!Equals [!Ref VpcEndpointId, ""]]
-  UseIT:           !Equals [!Ref EnableIntelligentTiering, "true"]
-  UseArchive:      !Equals [!Ref EnableArchive, "true"]
+    Description: "Nombre único del bucket (requerido)."
 
 Resources:
-  ClouxterS3Bucket:
+  AppBucket:
     Type: AWS::S3::Bucket
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !If
-        - UseProvidedName
-        - !Ref BucketName
-        - !Sub "clouxter-${AWS::AccountId}-${AWS::Region}-bucket"
-
-      OwnershipControls:
-        Rules:
-          - ObjectOwnership: BucketOwnerEnforced
-
+      BucketName: !Ref BucketName
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
-        IgnorePublicAcls: true
         BlockPublicPolicy: true
+        IgnorePublicAcls: true
         RestrictPublicBuckets: true
-
       VersioningConfiguration:
         Status: Enabled
-
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
-
       LifecycleConfiguration:
         Rules:
-          # Regla 1: Transición a Intelligent-Tiering (opcional)
-          - Id: ToIntelligentTiering
-            Status: !If [UseIT, Enabled, Disabled]
+          # Regla solicitada por la prueba:
+          - Id: CurrentToStandardIA
+            Status: Enabled
             Transitions:
-              - StorageClass: INTELLIGENT_TIERING
+              - StorageClass: STANDARD_IA
                 TransitionInDays: 30
 
-          # Regla 2A/2B: manejo de versiones no actuales (escoge según UseArchive)
-          - Fn::If:
-              - UseArchive
-              - # Deep Archive
-                Id: NonCurrentToDeepArchive
-                Status: Enabled
-                NoncurrentVersionTransitions:
-                  - StorageClass: DEEP_ARCHIVE
-                    TransitionInDays: 180
-                NoncurrentVersionExpiration:
-                  NoncurrentDays: 365
-              - # Standard-IA
-                Id: NonCurrentToStandardIA
-                Status: Enabled
-                NoncurrentVersionTransitions:
-                  - StorageClass: STANDARD_IA
-                    TransitionInDays: 90
-                NoncurrentVersionExpiration:
-                  NoncurrentDays: 365
-
-          # Regla 3: abortar multipart incompleto
-          - Id: AbortIncompleteMultipart
-            Status: Enabled
-            AbortIncompleteMultipartUpload:
-              DaysAfterInitiation: 7
-
-      Tags:
-        - Key: Project
-          Value: Clouxter
-        - Key: Name
-          Value: !If [UseProvidedName, !Ref BucketName, !Sub "clouxter-${AWS::AccountId}-${AWS::Region}-bucket"]
-
-  ClouxterS3BucketPolicy:
+  BucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
-      Bucket: !Ref ClouxterS3Bucket
+      Bucket: !Ref AppBucket
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: DenyInsecureTransport
+          - Sid: EnforceSSL
             Effect: Deny
             Principal: "*"
             Action: "s3:*"
             Resource:
-              - !Sub "${ClouxterS3Bucket.Arn}"
-              - !Sub "${ClouxterS3Bucket.Arn}/*"
+              - !Sub "arn:aws:s3:::${AppBucket}"
+              - !Sub "arn:aws:s3:::${AppBucket}/*"
             Condition:
               Bool:
-                aws:SecureTransport: "false"
-
-          - Fn::If:
-              - UseVpce
-              - 
-                Sid: DenyRequestsNotThroughVPCE
-                Effect: Deny
-                Principal: "*"
-                Action: "s3:*"
-                Resource:
-                  - !Sub "${ClouxterS3Bucket.Arn}"
-                  - !Sub "${ClouxterS3Bucket.Arn}/*"
-                Condition:
-                  StringNotEquals:
-                    aws:SourceVpce: !Ref VpcEndpointId
-              - !Ref "AWS::NoValue"
+                aws:SecureTransport: false
 
 Outputs:
-  BucketName:
-    Description: Nombre del bucket
-    Value: !Ref ClouxterS3Bucket
-  BucketArn:
-    Description: ARN del bucket
-    Value: !GetAtt ClouxterS3Bucket.Arn
+  BucketNameOut: { Value: !Ref AppBucket }
+  BucketArn:     { Value: !GetAtt AppBucket.Arn }
 
