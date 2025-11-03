@@ -6,13 +6,13 @@ on:
     paths:
       - 'vpc-subnets.yaml'
       - 'ec2-instances.yaml'
-      - 'dynamodb-table.yaml'
       - 's3-bucket.yaml'
-      - 'vpn.yaml'  # dispara cuando cambie la VPN
+      # (quitamos dynamodb-table.yaml y vpn.yaml)
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -24,101 +24,21 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
+      # ---------- Utils ----------
+      # Genera un nombre de bucket único (o usa VARS del repo si ya definiste S3_BUCKET_NAME)
+      - name: Set S3 bucket name
+        run: |
+          set -euo pipefail
+          BASE="${{ vars.S3_BUCKET_NAME }}"
+          if [ -z "${BASE}" ]; then
+            BASE="clouxter-${GITHUB_REPOSITORY_OWNER}-${GITHUB_RUN_ID}"
+          fi
+          # s3 bucket: minúsculas y caracteres válidos
+          BUCKET=$(echo "$BASE" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')
+          echo "S3_BUCKET_NAME=$BUCKET" >> $GITHUB_ENV
+          echo "Usando bucket: $BUCKET"
+
       # ---------- VPC ----------
       - name: Validate VPC Template
-        run: aws cloudformation validate-template --template-body file://vpc-subnets.yaml
-
-      - name: Deploy VPC Stack
-        run: |
-          set -euo pipefail
-          aws cloudformation deploy \
-            --template-file vpc-subnets.yaml \
-            --stack-name ClouxterVPCStack \
-            --no-fail-on-empty-changeset
-
-      - name: Capture VPC outputs (IDs y RTs)
-        run: |
-          set -euo pipefail
-          echo "VPC_ID=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query "Stacks[0].Outputs[?OutputKey=='VpcId'].OutputValue" --output text)" >> $GITHUB_ENV
-          echo "PUB_SUBNET_1=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query "Stacks[0].Outputs[?OutputKey=='PublicSubnet1Id'].OutputValue" --output text)" >> $GITHUB_ENV
-          echo "PUB_SUBNET_2=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query "Stacks[0].Outputs[?OutputKey=='PublicSubnet2Id'].OutputValue" --output text)" >> $GITHUB_ENV
-          echo "PRT1=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query "Stacks[0].Outputs[?OutputKey=='PrivateRouteTable1Id'].OutputValue" --output text)" >> $GITHUB_ENV
-          echo "PRT2=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query "Stacks[0].Outputs[?OutputKey=='PrivateRouteTable2Id'].OutputValue" --output text)" >> $GITHUB_ENV
-
-      # ---------- S3 ----------
-      - name: Validate S3 Template
-        run: aws cloudformation validate-template --template-body file://s3-bucket.yaml
-
-      - name: Deploy S3 Stack
-        run: |
-          set -euo pipefail
-          aws cloudformation deploy \
-            --template-file s3-bucket.yaml \
-            --stack-name ClouxterS3Stack \
-            --no-fail-on-empty-changeset
-
-      # ---------- DynamoDB ----------
-      - name: Validate DynamoDB Template
-        run: aws cloudformation validate-template --template-body file://dynamodb-table.yaml
-
-      - name: Deploy DynamoDB Stack
-        run: |
-          set -euo pipefail
-          aws cloudformation deploy \
-            --template-file dynamodb-table.yaml \
-            --stack-name ClouxterDynamoDBStack \
-            --no-fail-on-empty-changeset
-
-      # ---------- EC2 ----------
-      - name: Validate EC2 Template
-        run: aws cloudformation validate-template --template-body file://ec2-instances.yaml
-
-      - name: Deploy EC2 Stack
-        run: |
-          set -euo pipefail
-          aws cloudformation deploy \
-            --template-file ec2-instances.yaml \
-            --stack-name ClouxterEC2Stack \
-            --parameter-overrides \
-              VpcId=${{ env.VPC_ID }} \
-              PublicSubnet1Id=${{ env.PUB_SUBNET_1 }} \
-              PublicSubnet2Id=${{ env.PUB_SUBNET_2 }} \
-              InstanceType=t3.micro \
-              EnableSSH=false \
-              AdminCidr=0.0.0.0/0 \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset
-
-      # ---------- VPN ----------
-      - name: Validate VPN Template
-        run: aws cloudformation validate-template --template-body file://vpn.yaml
-
-      - name: Assert required envs for VPN
-        run: |
-          set -euo pipefail
-          test -n "${{ env.VPC_ID }}" || (echo "VPC_ID vacío" && exit 1)
-          test -n "${{ env.PRT1 }}"   || (echo "PRT1 vacío" && exit 1)
-          test -n "${{ env.PRT2 }}"   || (echo "PRT2 vacío" && exit 1)
-
-      - name: Deploy VPN Stack
-        run: |
-          set -euo pipefail
-          aws cloudformation deploy \
-            --template-file vpn.yaml \
-            --stack-name ClouxterVPNStack \
-            --parameter-overrides \
-              VpcId=${{ env.VPC_ID }} \
-              PrivateRouteTable1Id=${{ env.PRT1 }} \
-              PrivateRouteTable2Id=${{ env.PRT2 }} \
-              CustomerBgpAsn=65000 \
-            --no-fail-on-empty-changeset
-
-      - name: Dump CFN events (on failure)
-        if: failure()
-        run: |
-          aws cloudformation describe-stack-events --stack-name ClouxterVPNStack \
-            --query "reverse(StackEvents)[?contains(ResourceStatus,'FAILED') || contains(ResourceStatus,'ROLLBACK')].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
-            --output table | head -n 60 || true
-
-
+        run: aws cloudformation validate
 
