@@ -1,10 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "Bucket S3 con cifrado, bloqueo público y Lifecycle a STANDARD_IA a los 30 días (incluye noncurrent y cleanup)."
+Description: "S3 bucket with versioning, SSE-S3, TLS-only, and 30d transition to STANDARD_IA."
 
 Parameters:
   BucketName:
     Type: String
-    Description: "Nombre único del bucket (requerido, en minúsculas)."
+    Description: "Globally-unique, lowercase bucket name."
 
 Resources:
   AppBucket:
@@ -24,14 +24,11 @@ Resources:
               SSEAlgorithm: AES256
       LifecycleConfiguration:
         Rules:
-          - Id: CurrentToStandardIA
+          - Id: CurrentToIA30d
             Status: Enabled
             Transitions:
               - StorageClass: STANDARD_IA
                 TransitionInDays: 30
-            NoncurrentVersionTransitions:
-              - StorageClass: STANDARD_IA
-                NoncurrentDays: 30
             AbortIncompleteMultipartUpload:
               DaysAfterInitiation: 7
 
@@ -42,7 +39,7 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: EnforceSSL
+          - Sid: TLSRequired
             Effect: Deny
             Principal: "*"
             Action: "s3:*"
@@ -50,11 +47,9 @@ Resources:
               - !Sub "arn:aws:s3:::${AppBucket}"
               - !Sub "arn:aws:s3:::${AppBucket}/*"
             Condition:
-              Bool:
-                aws:SecureTransport: "false"
+              Bool: { aws:SecureTransport: "false" }
 
 Outputs:
-  BucketNameOut:
-    Value: !Ref AppBucket
-  BucketArn:
-    Value: !GetAtt AppBucket.Arn
+  BucketNameOut: { Value: !Ref AppBucket }
+  BucketArn:     { Value: !GetAtt AppBucket.Arn }
+
