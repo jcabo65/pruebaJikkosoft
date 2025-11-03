@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "EC2: 1 publica (web/bastion) + 1 privada. SSM + SGs con reglas exigidas."
+Description: "EC2: 1 publica (web/bastion) + 1 privada. SSM + SGs. Cumple prueba Free Tier."
 
 Parameters:
   VpcId:
@@ -18,15 +18,21 @@ Parameters:
   AdminCidr:
     Type: String
     Default: 0.0.0.0/0
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: ""
+    Description: "Optional. If set, allows SSH auth with this key pair."
   AmiId:
-    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
-    Default: '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64'
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
   S3BucketName:
     Type: String
     Default: ""
 
 Conditions:
   OpenSSH: !Equals [!Ref EnableSSH, "true"]
+  HasKeyName: !Not [!Equals [!Ref KeyName, ""]]
+  HasBucket: !Not [!Equals [!Ref S3BucketName, ""]]
 
 Resources:
   # SG publica: HTTP publico + SSH opcional desde AdminCidr
@@ -73,7 +79,26 @@ Resources:
       ToPort: 22
       SourceSecurityGroupId: !Ref PublicInstanceSG
 
-  # Role + InstanceProfile: SSM + acceso S3 opcional
+  # Policy S3 gestionada (solo si hay bucket definido)
+  S3RWPolicy:
+    Condition: HasBucket
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-s3rw"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: S3RW
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${S3BucketName}"
+              - !Sub "arn:aws:s3:::${S3BucketName}/*"
+
+  # Role + InstanceProfile: SSM + (opcional) S3 RW
   Ec2Role:
     Type: AWS::IAM::Role
     Properties:
@@ -85,24 +110,12 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-      Policies:
-        - PolicyName: OptionalS3
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Sid: S3RW
-                Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                  - s3:ListBucket
-                Resource:
-                  - !Sub "arn:aws:s3:::${S3BucketName}"
-                  - !Sub "arn:aws:s3:::${S3BucketName}/*"
+        - !If [HasBucket, !Ref S3RWPolicy, !Ref "AWS::NoValue"]
 
   Ec2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
-    Properties: { Roles: [ !Ref Ec2Role ] }
+    Properties:
+      Roles: [ !Ref Ec2Role ]
 
   # Instancia publica (web/bastion)
   EC2Public:
@@ -114,17 +127,30 @@ Resources:
       ImageId: !Ref AmiId
       SubnetId: !Ref PublicSubnet1Id
       SecurityGroupIds: [ !Ref PublicInstanceSG ]
+      KeyName: !If [HasKeyName, !Ref KeyName, !Ref "AWS::NoValue"]
       MetadataOptions: { HttpTokens: required, HttpEndpoint: enabled }
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs: { Encrypted: true, VolumeType: gp3, VolumeSize: 8 }
-      UserData: !Base64 |
-        #!/bin/bash
-        dnf -y update
-        dnf -y install httpd
-        echo '<h1>Public OK</h1>' > /var/www/html/index.html
-        systemctl enable --now httpd
-      Tags: [ { Key: Name, Value: PublicInstance } ]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          dnf -y update
+          dnf -y install httpd awscli
+          echo '<h1>Public OK</h1>' > /var/www/html/index.html
+          systemctl enable --now httpd
+
+          # Test opcional de S3 (si S3BucketName no es vacio)
+          BUCKET='${S3BucketName}'
+          if [ -n "$BUCKET" ]; then
+            echo "from public ec2" > /tmp/hello-public.txt
+            aws s3 cp /tmp/hello-public.txt "s3://${BUCKET}/sample/hello-from-ec2.txt" || true
+            aws s3 ls "s3://${BUCKET}/sample/" || true
+          fi
+      Tags:
+        - Key: Name
+          Value: PublicInstance
 
   # Instancia privada (SSH solo desde la publica)
   EC2Private:
@@ -136,11 +162,14 @@ Resources:
       ImageId: !Ref AmiId
       SubnetId: !Ref PrivateSubnet1Id
       SecurityGroupIds: [ !Ref PrivateInstanceSG ]
+      KeyName: !If [HasKeyName, !Ref KeyName, !Ref "AWS::NoValue"]
       MetadataOptions: { HttpTokens: required, HttpEndpoint: enabled }
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs: { Encrypted: true, VolumeType: gp3, VolumeSize: 8 }
-      Tags: [ { Key: Name, Value: PrivateInstance } ]
+      Tags:
+        - Key: Name
+          Value: PrivateInstance
 
 Outputs:
   PublicInstanceId:
@@ -151,6 +180,7 @@ Outputs:
     Value: !Ref PublicInstanceSG
   PrivateInstanceSgId:
     Value: !Ref PrivateInstanceSG
-
-
-
+  PublicInstancePublicIp:
+    Value: !GetAtt EC2Public.PublicIp
+  PrivateInstancePrivateIp:
+    Value: !GetAtt EC2Private.PrivateIp
