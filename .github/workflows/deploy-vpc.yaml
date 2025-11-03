@@ -1,25 +1,26 @@
-name: Deploy
+name: Deploy All
 
 on:
   push:
     branches: [ main ]
     paths:
       - 'vpc-subnets.yaml'
-      - 'ec2-instances.yaml'
       - 's3-bucket.yaml'
       - 'iam.yaml'
+      - 'ec2-instances.yaml'
       - 'cloudwatch.yaml'
+      - '.github/workflows/deploy.yml'
 
 jobs:
-  deploy:
+  deploy-all:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -27,6 +28,7 @@ jobs:
 
       # ---------- Utils ----------
       - name: Set S3 bucket name
+        shell: bash
         run: |
           set -euo pipefail
           BASE="${{ vars.S3_BUCKET_NAME }}"
@@ -34,7 +36,7 @@ jobs:
             BASE="clouxter-${GITHUB_REPOSITORY_OWNER}-${GITHUB_RUN_ID}"
           fi
           BUCKET=$(echo "$BASE" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')
-          echo "S3_BUCKET_NAME=$BUCKET" >> $GITHUB_ENV
+          echo "S3_BUCKET_NAME=$BUCKET" >> "$GITHUB_ENV"
           echo "Usando bucket: $BUCKET"
 
       # ---------- VPC ----------
@@ -42,6 +44,7 @@ jobs:
         run: aws cloudformation validate-template --template-body file://vpc-subnets.yaml
 
       - name: Deploy VPC Stack (Free Tier: NAT off)
+        shell: bash
         run: |
           set -euo pipefail
           aws cloudformation deploy \
@@ -51,17 +54,23 @@ jobs:
             --no-fail-on-empty-changeset
 
       - name: Capture VPC outputs
+        shell: bash
         run: |
           set -euo pipefail
-          echo "VPC_ID=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query "Stacks[0].Outputs[?OutputKey=='VpcId'].OutputValue" --output text)" >> $GITHUB_ENV
-          echo "PUB_SUBNET_1=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query "Stacks[0].Outputs[?OutputKey=='PublicSubnet1Id'].OutputValue" --output text)" >> $GITHUB_ENV
-          echo "PRIV_SUBNET_1=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query "Stacks[0].Outputs[?OutputKey=='PrivateSubnet1Id'].OutputValue" --output text)" >> $GITHUB_ENV
+          VPC_ID=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query 'Stacks[0].Outputs[?OutputKey==`VpcId`].OutputValue' --output text)
+          PUB_SUBNET_1=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query 'Stacks[0].Outputs[?OutputKey==`PublicSubnet1Id`].OutputValue' --output text)
+          PRIV_SUBNET_1=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query 'Stacks[0].Outputs[?OutputKey==`PrivateSubnet1Id`].OutputValue' --output text)
+
+          echo "VPC_ID=$VPC_ID" >> "$GITHUB_ENV"
+          echo "PUB_SUBNET_1=$PUB_SUBNET_1" >> "$GITHUB_ENV"
+          echo "PRIV_SUBNET_1=$PRIV_SUBNET_1" >> "$GITHUB_ENV"
 
       # ---------- S3 ----------
       - name: Validate S3 Template
         run: aws cloudformation validate-template --template-body file://s3-bucket.yaml
 
       - name: Deploy S3 Stack
+        shell: bash
         run: |
           set -euo pipefail
           aws cloudformation deploy \
@@ -75,6 +84,7 @@ jobs:
         run: aws cloudformation validate-template --template-body file://iam.yaml
 
       - name: Deploy IAM Stack
+        shell: bash
         run: |
           set -euo pipefail
           aws cloudformation deploy \
@@ -89,6 +99,7 @@ jobs:
         run: aws cloudformation validate-template --template-body file://ec2-instances.yaml
 
       - name: Deploy EC2 Stack
+        shell: bash
         run: |
           set -euo pipefail
           aws cloudformation deploy \
@@ -106,9 +117,11 @@ jobs:
             --no-fail-on-empty-changeset
 
       - name: Capture EC2 outputs
+        shell: bash
         run: |
           set -euo pipefail
-          echo "INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name ClouxterEC2Stack --query "Stacks[0].Outputs[?OutputKey=='PublicInstanceId'].OutputValue" --output text)" >> $GITHUB_ENV
+          INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name ClouxterEC2Stack --query 'Stacks[0].Outputs[?OutputKey==`PublicInstanceId`].OutputValue' --output text)
+          echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
           echo "INSTANCE_ID=$INSTANCE_ID"
 
       # ---------- CloudWatch (alarma CPU + SNS) ----------
@@ -116,6 +129,7 @@ jobs:
         run: aws cloudformation validate-template --template-body file://cloudwatch.yaml
 
       - name: Deploy CloudWatch Stack
+        shell: bash
         run: |
           set -euo pipefail
           aws cloudformation deploy \
@@ -129,11 +143,6 @@ jobs:
       # ---------- Debug ----------
       - name: Dump CFN events (on failure)
         if: failure()
+        shell: bash
         run: |
-          for s in ClouxterVPCStack ClouxterS3Stack ClouxterIAMStack ClouxterEC2Stack ClouxterMonitoringStack; do
-            echo "::group::Events for $s"
-            aws cloudformation describe-stack-events --stack-name "$s" \
-              --query "reverse(StackEvents)[?contains(ResourceStatus,'FAILED') || contains(ResourceStatus,'ROLLBACK')].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
-              --output table || true
-            echo "::endgroup::"
-          done
+          for s
