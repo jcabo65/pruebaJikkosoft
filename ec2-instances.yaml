@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "EC2: 1 pública (web/bastión) + 1 privada. SSM + SGs con reglas exigidas."
+Description: "EC2: 1 pública (web/bastión) + 1 privada. SSM + SGs con reglas exigida."
 
 Parameters:
   VpcId:
