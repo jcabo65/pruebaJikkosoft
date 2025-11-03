@@ -1,36 +1,72 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "IAM: usuario programático con permisos mínimos sobre el bucket S3."
+Description: "IAM: usuario programatico opcional con permisos minimos sobre un bucket S3."
 
 Parameters:
   S3BucketName:
     Type: String
-    Description: "Bucket donde el user podrá leer/escribir."
+    Description: "Bucket donde el user podra leer/escribir."
+  CreateProgrammaticUser:
+    Type: String
+    AllowedValues: ["true","false"]
+    Default: "true"
+    Description: "Si 'true', crea el usuario IAM."
+  CreateAccessKey:
+    Type: String
+    AllowedValues: ["true","false"]
+    Default: "true"
+    Description: "Si 'true' y hay usuario, crea AccessKey/Secret."
+  UserName:
+    Type: String
+    Default: !Sub "${AWS::StackName}-user"
+    Description: "Nombre del usuario (por defecto deriva del nombre del stack)."
+
+Conditions:
+  DoCreateUser: !Equals [!Ref CreateProgrammaticUser, "true"]
+  DoCreateKey: !And [!Condition DoCreateUser, !Equals [!Ref CreateAccessKey, "true"]]
+  HasBucket:   !Not [!Equals [!Ref S3BucketName, ""]]
 
 Resources:
+  # Politica administrada con permisos minimos sobre el bucket indicado
+  S3RWPolicy:
+    Condition: HasBucket
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-s3rw"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: S3RW
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${S3BucketName}"
+              - !Sub "arn:aws:s3:::${S3BucketName}/*"
+
   LabUser:
+    Condition: DoCreateUser
     Type: AWS::IAM::User
     Properties:
-      UserName: lab-user
-      Policies:
-        - PolicyName: S3RWBucket
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                  - s3:ListBucket
-                Resource:
-                  - !Sub "arn:aws:s3:::${S3BucketName}"
-                  - !Sub "arn:aws:s3:::${S3BucketName}/*"
+      UserName: !Ref UserName
+      Path: "/"
+      ManagedPolicyArns:
+        - !If [HasBucket, !Ref S3RWPolicy, !Ref "AWS::NoValue"]
 
   LabUserAccessKey:
+    Condition: DoCreateKey
     Type: AWS::IAM::AccessKey
     Properties:
       UserName: !Ref LabUser
 
 Outputs:
-  ProgrammaticUser:   { Value: !Ref LabUser }
-  AccessKeyId:        { Value: !Ref LabUserAccessKey, Description: "⚠️ No publiques en logs" }
-  SecretAccessKey:    { Value: !GetAtt LabUserAccessKey.SecretAccessKey, Description: "⚠️ No publiques en logs" }
+  ProgrammaticUser:
+    Value: !If [ DoCreateUser, !Ref LabUser, "not-created" ]
+    Description: "Nombre del usuario (si se creo)."
+  AccessKeyId:
+    Value: !If [ DoCreateKey, !Ref LabUserAccessKey, "not-created" ]
+    Description: "Access Key ID (evita imprimir en logs)."
+  SecretAccessKey:
+    Value: !If [ DoCreateKey, !GetAtt LabUserAccessKey.SecretAccessKey, "not-created" ]
+    Description: "Secret (se muestra solo en creacion; evita imprimir en logs)."
