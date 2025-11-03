@@ -1,0 +1,36 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "IAM: usuario programático con permisos mínimos sobre el bucket S3."
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Description: "Bucket donde el user podrá leer/escribir."
+
+Resources:
+  LabUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: lab-user
+      Policies:
+        - PolicyName: S3RWBucket
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${S3BucketName}"
+                  - !Sub "arn:aws:s3:::${S3BucketName}/*"
+
+  LabUserAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref LabUser
+
+Outputs:
+  ProgrammaticUser:   { Value: !Ref LabUser }
+  AccessKeyId:        { Value: !Ref LabUserAccessKey, Description: "⚠️ No publiques en logs" }
+  SecretAccessKey:    { Value: !GetAtt LabUserAccessKey.SecretAccessKey, Description: "⚠️ No publiques en logs" }
