@@ -1,63 +1,79 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "EC2 x2 for Clouxter (SSM, IMDSv2, gp3 encrypted, SSH opcional)"
+Description: "EC2: 1 pública (web/bastión) + 1 privada. SSM + SGs con reglas exigidas."
 
 Parameters:
   VpcId:
     Type: AWS::EC2::VPC::Id
   PublicSubnet1Id:
     Type: AWS::EC2::Subnet::Id
-  PublicSubnet2Id:
+  PrivateSubnet1Id:
     Type: AWS::EC2::Subnet::Id
   InstanceType:
     Type: String
     Default: t3.micro
   EnableSSH:
     Type: String
-    Default: "false"
+    Default: "true"
     AllowedValues: ["true","false"]
   AdminCidr:
     Type: String
-    Default: "0.0.0.0/0"
-    Description: "Solo aplica si EnableSSH=true (ej: 1.2.3.4/32)"
+    Default: 0.0.0.0/0
   AmiId:
-    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Type: String
     Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+  S3BucketName:
+    Type: String
+    Default: ""
 
 Conditions:
   OpenSSH: !Equals [!Ref EnableSSH, "true"]
 
 Resources:
-  InstanceSecurityGroup:
+  # SG pública: HTTP público + SSH opcional desde AdminCidr
+  PublicInstanceSG:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow HTTP (and SSH optional)
+      GroupDescription: "SG pública - HTTP y (opcional) SSH desde Internet"
       VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
-      Tags:
-        - Key: Name
-          Value: ClouxterSG
 
-  SGIngressHttp80:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      GroupId: !Ref InstanceSecurityGroup
-      IpProtocol: tcp
-      FromPort: 80
-      ToPort: 80
-      CidrIp: 0.0.0.0/0
-
-  SGIngressSsh22:
+  PublicSgSshFromInternet:
     Condition: OpenSSH
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
-      GroupId: !Ref InstanceSecurityGroup
+      GroupId: !Ref PublicInstanceSG
       IpProtocol: tcp
       FromPort: 22
       ToPort: 22
       CidrIp: !Ref AdminCidr
 
+  # SG privada: SSH SOLO desde la SG pública
+  PrivateInstanceSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "SG privada - SSH solo desde la instancia pública"
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  PrivateSgSshFromPublicSg:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref PrivateInstanceSG
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId: !Ref PublicInstanceSG
+
+  # Role + InstanceProfile: SSM + acceso S3 opcional (al bucket indicado)
   Ec2Role:
     Type: AWS::IAM::Role
     Properties:
@@ -65,21 +81,31 @@ Resources:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
+            Principal: { Service: ec2.amazonaws.com }
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-      Tags:
-        - Key: Name
-          Value: ClouxterEc2Role
+      Policies:
+        - PolicyName: OptionalS3
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: S3RW
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${S3BucketName}"
+                  - !Sub "arn:aws:s3:::${S3BucketName}/*"
 
   Ec2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
-    Properties:
-      Roles: [ !Ref Ec2Role ]
+    Properties: { Roles: [ !Ref Ec2Role ] }
 
-  EC2Instance1:
+  # Instancia pública (web/bastión)
+  EC2Public:
     Type: AWS::EC2::Instance
     DependsOn: Ec2InstanceProfile
     Properties:
@@ -87,59 +113,38 @@ Resources:
       InstanceType: !Ref InstanceType
       ImageId: !Ref AmiId
       SubnetId: !Ref PublicSubnet1Id
-      SecurityGroupIds: [ !Ref InstanceSecurityGroup ]
-      MetadataOptions:
-        HttpTokens: required
-        HttpEndpoint: enabled
+      SecurityGroupIds: [ !Ref PublicInstanceSG ]
+      MetadataOptions: { HttpTokens: required, HttpEndpoint: enabled }
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
-          Ebs:
-            Encrypted: true
-            VolumeType: gp3
-            VolumeSize: 8
+          Ebs: { Encrypted: true, VolumeType: gp3, VolumeSize: 8 }
       UserData: !Base64 |
         #!/bin/bash
         dnf -y update
         dnf -y install httpd
-        echo '<h1>Instance1 OK</h1>' > /var/www/html/index.html
+        echo '<h1>Public OK</h1>' > /var/www/html/index.html
         systemctl enable --now httpd
-      Tags:
-        - Key: Name
-          Value: Instance1
+      Tags: [ { Key: Name, Value: PublicInstance } ]
 
-  EC2Instance2:
+  # Instancia privada (SSH solo desde la pública)
+  EC2Private:
     Type: AWS::EC2::Instance
     DependsOn: Ec2InstanceProfile
     Properties:
       IamInstanceProfile: !Ref Ec2InstanceProfile
       InstanceType: !Ref InstanceType
       ImageId: !Ref AmiId
-      SubnetId: !Ref PublicSubnet2Id
-      SecurityGroupIds: [ !Ref InstanceSecurityGroup ]
-      MetadataOptions:
-        HttpTokens: required
-        HttpEndpoint: enabled
+      SubnetId: !Ref PrivateSubnet1Id
+      SecurityGroupIds: [ !Ref PrivateInstanceSG ]
+      MetadataOptions: { HttpTokens: required, HttpEndpoint: enabled }
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
-          Ebs:
-            Encrypted: true
-            VolumeType: gp3
-            VolumeSize: 8
-      UserData: !Base64 |
-        #!/bin/bash
-        dnf -y update
-        dnf -y install httpd
-        echo '<h1>Instance2 OK</h1>' > /var/www/html/index.html
-        systemctl enable --now httpd
-      Tags:
-        - Key: Name
-          Value: Instance2
+          Ebs: { Encrypted: true, VolumeType: gp3, VolumeSize: 8 }
+      Tags: [ { Key: Name, Value: PrivateInstance } ]
 
 Outputs:
-  InstanceSecurityGroupId:
-    Value: !Ref InstanceSecurityGroup
-  Instance1Id:
-    Value: !Ref EC2Instance1
-  Instance2Id:
-    Value: !Ref EC2Instance2
+  PublicInstanceId:   { Value: !Ref EC2Public }
+  PrivateInstanceId:  { Value: !Ref EC2Private }
+  PublicInstanceSgId: { Value: !Ref PublicInstanceSG }
+  PrivateInstanceSgId:{ Value: !Ref PrivateInstanceSG }
 
