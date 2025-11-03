@@ -1,124 +1,214 @@
-name: Destroy
+name: Destroy All
 
 on:
   workflow_dispatch:
     inputs:
-      full_wipe:
-        description: "Also delete retained S3 bucket and DynamoDB table?"
+      prefix:
+        description: "Prefijo de los stacks (Jikkosoft o Clouxter)"
+        required: false
+        default: "Jikkosoft"
+      region:
+        description: "AWS region"
+        required: false
+        default: "us-east-1"
+      skip_iam:
+        description: "Omitir borrado de IAM stack (si usas esas credenciales)"
+        required: false
+        default: "false"
+      dry_run:
+        description: "Dry run (no ejecuta, solo muestra comandos)"
         required: false
         default: "false"
 
 jobs:
-  destroy:
+  destroy-all:
     runs-on: ubuntu-latest
-    env:
-      AWS_REGION: us-east-1
-      VPC_STACK: ClouxterVPCStack
-      EC2_STACK: ClouxterEC2Stack
-      DDB_STACK: ClouxterDynamoDBStack
-      S3_STACK:  ClouxterS3Stack
-      VPN_STACK: ClouxterVPNStack
-      FULL_WIPE: ${{ github.event.inputs.full_wipe }}
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ github.event.inputs.region || 'us-east-1' }}
 
-      - name: Capture S3 & DDB identifiers (for optional FULL_WIPE)
-        id: capture
+      - name: Init vars
         shell: bash
         run: |
-          # DynamoDB TableName (from stack outputs; may be empty if stack missing)
-          DDB_TABLE=$(aws cloudformation describe-stacks --stack-name "$DDB_STACK" \
-            --query "Stacks[0].Outputs[?OutputKey=='TableName'].OutputValue" --output text 2>/dev/null || true)
-          echo "DDB_TABLE=$DDB_TABLE" >> $GITHUB_ENV
-          echo "Captured DynamoDB table: ${DDB_TABLE:-<none>}"
+          set -euo pipefail
+          PREFIX="${{ github.event.inputs.prefix }}"
+          REGION="${{ github.event.inputs.region }}"
+          SKIP_IAM="${{ github.event.inputs.skip_iam }}"
+          DRY_RUN="${{ github.event.inputs.dry_run }}"
+          if [[ -z "${PREFIX}" ]]; then PREFIX="Jikkosoft"; fi
+          if [[ -z "${REGION}" ]]; then REGION="us-east-1"; fi
+          if [[ -z "${SKIP_IAM}" ]]; then SKIP_IAM="false"; fi
+          if [[ -z "${DRY_RUN}" ]]; then DRY_RUN="false"; fi
 
-          # S3 BucketName (from stack outputs; may be empty)
-          S3_BUCKET=$(aws cloudformation describe-stacks --stack-name "$S3_STACK" \
-            --query "Stacks[0].Outputs[?OutputKey=='BucketName'].OutputValue" --output text 2>/dev/null || true)
-          echo "S3_BUCKET=$S3_BUCKET" >> $GITHUB_ENV
-          echo "Captured S3 bucket: ${S3_BUCKET:-<none>}"
+          echo "STACK_PREFIX=$PREFIX" >> $GITHUB_ENV
+          echo "AWS_REGION=$REGION" >> $GITHUB_ENV
+          echo "SKIP_IAM=$SKIP_IAM" >> $GITHUB_ENV
+          echo "DRY_RUN=$DRY_RUN" >> $GITHUB_ENV
 
-      - name: Delete VPN stack (if exists)
+          echo "S_MON=${PREFIX}MonitoringStack" >> $GITHUB_ENV
+          echo "S_EC2=${PREFIX}EC2Stack"        >> $GITHUB_ENV
+          echo "S_IAM=${PREFIX}IAMStack"        >> $GITHUB_ENV
+          echo "S_S3=${PREFIX}S3Stack"          >> $GITHUB_ENV
+          echo "S_VPC=${PREFIX}VPCStack"        >> $GITHUB_ENV
+
+          echo "Plan de destroy:"
+          echo "  Region: $REGION"
+          echo "  Prefix: $PREFIX"
+          echo "  Orden:  ${PREFIX}MonitoringStack -> ${PREFIX}EC2Stack -> ${PREFIX}IAMStack -> ${PREFIX}S3Stack -> ${PREFIX}VPCStack"
+          echo "  Skip IAM: $SKIP_IAM"
+          echo "  Dry run:  $DRY_RUN"
+
+      - name: Write helpers
         shell: bash
         run: |
-          if aws cloudformation describe-stacks --stack-name "$VPN_STACK" >/dev/null 2>&1; then
-            aws cloudformation delete-stack --stack-name "$VPN_STACK"
-            aws cloudformation wait stack-delete-complete --stack-name "$VPN_STACK"
-          else
-            echo "VPN stack not found, skipping."
-          fi
+          set -euo pipefail
+          cat > helpers.sh << 'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
 
-      - name: Delete EC2 stack (if exists)
-        shell: bash
-        run: |
-          if aws cloudformation describe-stacks --stack-name "$EC2_STACK" >/dev/null 2>&1; then
-            aws cloudformation delete-stack --stack-name "$EC2_STACK"
-            aws cloudformation wait stack-delete-complete --stack-name "$EC2_STACK"
-          else
-            echo "EC2 stack not found, skipping."
-          fi
+          aws_cmd() {
+            if [[ "${DRY_RUN}" == "true" ]]; then
+              echo "[DRY] aws $*"
+            else
+              aws "$@" --region "${AWS_REGION}"
+            fi
+          }
 
-      - name: Delete DynamoDB stack (if exists)
-        shell: bash
-        run: |
-          if aws cloudformation describe-stacks --stack-name "$DDB_STACK" >/dev/null 2>&1; then
-            aws cloudformation delete-stack --stack-name "$DDB_STACK"
-            aws cloudformation wait stack-delete-complete --stack-name "$DDB_STACK"
-          else
-            echo "DynamoDB stack not found, skipping."
-          fi
+          stack_exists() {
+            set +e
+            aws cloudformation describe-stacks --stack-name "$1" --region "${AWS_REGION}" >/dev/null 2>&1
+            local rc=$?
+            set -e
+            return $rc
+          }
 
-      - name: Delete S3 stack (if exists)
-        shell: bash
-        run: |
-          if aws cloudformation describe-stacks --stack-name "$S3_STACK" >/dev/null 2>&1; then
-            aws cloudformation delete-stack --stack-name "$S3_STACK"
-            aws cloudformation wait stack-delete-complete --stack-name "$S3_STACK"
-          else
-            echo "S3 stack not found, skipping."
-          fi
+          delete_stack_if_exists() {
+            local name="$1"
+            if stack_exists "$name"; then
+              echo "Deleting stack: $name"
+              aws_cmd cloudformation delete-stack --stack-name "$name"
+              if [[ "${DRY_RUN}" != "true" ]]; then
+                aws cloudformation wait stack-delete-complete --stack-name "$name" --region "${AWS_REGION}" || {
+                  echo "WARN: wait failed or stack already gone."
+                }
+              fi
+              echo "Deleted: $name"
+            else
+              echo "Stack not found, skipping: $name"
+            fi
+          }
 
-      - name: Delete VPC stack (if exists)
-        shell: bash
-        run: |
-          if aws cloudformation describe-stacks --stack-name "$VPC_STACK" >/dev/null 2>&1; then
-            aws cloudformation delete-stack --stack-name "$VPC_STACK"
-            aws cloudformation wait stack-delete-complete --stack-name "$VPC_STACK"
-          else
-            echo "VPC stack not found, skipping."
-          fi
+          bucket_from_stack() {
+            local stack="$1"
+            if stack_exists "$stack"; then
+              aws cloudformation describe-stacks --stack-name "$stack" --region "${AWS_REGION}" \
+                --query "Stacks[0].Outputs[?OutputKey=='BucketNameOut'].OutputValue" --output text 2>/dev/null || echo ""
+            else
+              echo ""
+            fi
+          }
 
-      - name: FULL WIPE — delete retained DynamoDB table (optional)
-        if: env.FULL_WIPE == 'true'
-        shell: bash
-        run: |
-          if [ -n "${DDB_TABLE}" ] && [ "${DDB_TABLE}" != "None" ]; then
-            echo "Deleting retained DynamoDB table: $DDB_TABLE"
-            aws dynamodb delete-table --table-name "$DDB_TABLE" || true
-            # Wait until table is gone (optional)
-            for i in {1..30}; do
-              aws dynamodb describe-table --table-name "$DDB_TABLE" >/dev/null 2>&1 || { echo "Table deleted."; exit 0; }
-              echo "Waiting for table deletion..."; sleep 10
+          empty_versioned_bucket() {
+            local bucket="$1"
+            if [[ -z "$bucket" || "$bucket" == "None" || "$bucket" == "null" ]]; then
+              echo "No bucket to empty."
+              return 0
+            fi
+            echo "Emptying bucket (versions + delete markers): s3://$bucket"
+
+            # Delete all versions
+            while true; do
+              mapfile -t LINES < <(aws s3api list-object-versions --bucket "$bucket" --region "${AWS_REGION}" \
+                --query 'Versions[].{K:Key,V:VersionId}' --output text 2>/dev/null || echo "")
+              [[ ${#LINES[@]} -eq 0 ]] && break
+              for line in "${LINES[@]}"; do
+                key="${line%$'\t'*}"
+                vid="${line#*$'\t'}"
+                aws_cmd s3api delete-object --bucket "$bucket" --key "$key" --version-id "$vid" || true
+              done
             done
-          else
-            echo "No DynamoDB table captured, skipping."
-          fi
 
-      - name: FULL WIPE — delete retained S3 bucket (optional)
-        if: env.FULL_WIPE == 'true'
+            # Delete delete-markers
+            while true; do
+              mapfile -t LINES < <(aws s3api list-object-versions --bucket "$bucket" --region "${AWS_REGION}" \
+                --query 'DeleteMarkers[].{K:Key,V:VersionId}' --output text 2>/dev/null || echo "")
+              [[ ${#LINES[@]} -eq 0 ]] && break
+              for line in "${LINES[@]}"; do
+                key="${line%$'\t'*}"
+                vid="${line#*$'\t'}"
+                aws_cmd s3api delete-object --bucket "$bucket" --key "$key" --version-id "$vid" || true
+              done
+            done
+
+            echo "Bucket emptied: s3://$bucket"
+          }
+
+          print_stack_events() {
+            local name="$1"
+            if stack_exists "$name"; then
+              echo "::group::Events for $name"
+              aws cloudformation describe-stack-events --stack-name "$name" --region "${AWS_REGION}" \
+                --query "reverse(StackEvents)[0:40].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
+                --output table || true
+              echo "::endgroup::"
+            fi
+          }
+          EOF
+          chmod +x helpers.sh
+
+      - name: Delete monitoring stack
         shell: bash
         run: |
-          if [ -n "${S3_BUCKET}" ] && [ "${S3_BUCKET}" != "None" ]; then
-            echo "Force-removing S3 bucket (all versions/objects): s3://$S3_BUCKET"
-            aws s3 rb "s3://$S3_BUCKET" --force || true
-          else
-            echo "No S3 bucket captured, skipping."
+          set -euo pipefail
+          . ./helpers.sh
+          print_stack_events "${S_MON}"
+          delete_stack_if_exists "${S_MON}"
+
+      - name: Delete EC2 stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          . ./helpers.sh
+          print_stack_events "${S_EC2}"
+          delete_stack_if_exists "${S_EC2}"
+
+      - name: Delete IAM stack
+        if: env.SKIP_IAM != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          . ./helpers.sh
+          print_stack_events "${S_IAM}"
+          delete_stack_if_exists "${S_IAM}"
+
+      - name: Empty S3 bucket and delete S3 stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          . ./helpers.sh
+          B="$(bucket_from_stack "${S_S3}" || echo "")"
+          echo "Bucket from ${S_S3}: ${B:-<none>}"
+          if [[ -n "${B:-}" && "${B}" != "None" && "${B}" != "null" ]]; then
+            empty_versioned_bucket "$B"
           fi
+          print_stack_events "${S_S3}"
+          delete_stack_if_exists "${S_S3}"
+
+      - name: Delete VPC stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          . ./helpers.sh
+          print_stack_events "${S_VPC}"
+          delete_stack_if_exists "${S_VPC}"
+
+      - name: Done
+        run: echo "Destroy complete"
