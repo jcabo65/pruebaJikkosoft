@@ -1,8 +1,8 @@
 name: Deploy All
 
 on:
-  workflow_dispatch: {}         # <- botón "Run workflow" en la pestaña Actions
-  push:                         # <- corre con cualquier push (sin filtros)
+  workflow_dispatch: {}
+  push: {}
   pull_request:
     branches: [ main ]
 
@@ -21,7 +21,6 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      # ---------- Utils ----------
       - name: Set S3 bucket name
         shell: bash
         run: |
@@ -34,11 +33,10 @@ jobs:
           echo "S3_BUCKET_NAME=$BUCKET" >> "$GITHUB_ENV"
           echo "Usando bucket: $BUCKET"
 
-      # ---------- VPC ----------
-      - name: Validate VPC Template
+      - name: Validate VPC template
         run: aws cloudformation validate-template --template-body file://vpc-subnets.yaml
 
-      - name: Deploy VPC Stack (Free Tier: NAT off)
+      - name: Deploy VPC stack NAT off
         shell: bash
         run: |
           set -euo pipefail
@@ -59,11 +57,10 @@ jobs:
           echo "PUB_SUBNET_1=$PUB_SUBNET_1" >> "$GITHUB_ENV"
           echo "PRIV_SUBNET_1=$PRIV_SUBNET_1" >> "$GITHUB_ENV"
 
-      # ---------- S3 ----------
-      - name: Validate S3 Template
+      - name: Validate S3 template
         run: aws cloudformation validate-template --template-body file://s3-bucket.yaml
 
-      - name: Deploy S3 Stack
+      - name: Deploy S3 stack
         shell: bash
         run: |
           set -euo pipefail
@@ -73,11 +70,10 @@ jobs:
             --parameter-overrides BucketName=${{ env.S3_BUCKET_NAME }} \
             --no-fail-on-empty-changeset
 
-      # ---------- IAM (usuario programático) ----------
-      - name: Validate IAM Template
+      - name: Validate IAM template
         run: aws cloudformation validate-template --template-body file://iam.yaml
 
-      - name: Deploy IAM Stack
+      - name: Deploy IAM stack
         shell: bash
         run: |
           set -euo pipefail
@@ -88,11 +84,10 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
-      # ---------- EC2 ----------
-      - name: Validate EC2 Template
+      - name: Validate EC2 template
         run: aws cloudformation validate-template --template-body file://ec2-instances.yaml
 
-      - name: Deploy EC2 Stack
+      - name: Deploy EC2 stack
         shell: bash
         run: |
           set -euo pipefail
@@ -118,9 +113,30 @@ jobs:
           echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
           echo "INSTANCE_ID=$INSTANCE_ID"
 
-      # ---------- CloudWatch (alarma CPU + SNS) ----------
-      - name: Validate CloudWatch Template
+      - name: Validate CloudWatch template
         run: aws cloudformation validate-template --template-body file://cloudwatch.yaml
 
-      - name: Deploy CloudWatch Stack
-        she
+      - name: Deploy CloudWatch stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws cloudformation deploy \
+            --template-file cloudwatch.yaml \
+            --stack-name ClouxterMonitoringStack \
+            --parameter-overrides \
+              InstanceId=${{ env.INSTANCE_ID }} \
+              AlertEmail=jcabo65@gmail.com \
+            --no-fail-on-empty-changeset
+
+      - name: Dump CFN events on failure
+        if: failure()
+        shell: bash
+        run: |
+          for s in ClouxterVPCStack ClouxterS3Stack ClouxterIAMStack ClouxterEC2Stack ClouxterMonitoringStack; do
+            echo "::group::Events for $s"
+            aws cloudformation describe-stack-events --stack-name "$s" \
+              --query "reverse(StackEvents)[?contains(ResourceStatus,'FAILED') || contains(ResourceStatus,'ROLLBACK')].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
+              --output table || true
+            echo "::endgroup::"
+          done
+
