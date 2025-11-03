@@ -1,32 +1,22 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "VPC con 2 subredes públicas y 2 privadas. Free Tier por defecto (sin NAT)."
+Description: "VPC con 2 subredes públicas y 2 privadas. NAT opcional (OFF por defecto, Free Tier)."
 
 Parameters:
   VpcCidr:
     Type: String
     Default: 10.0.0.0/16
-
   PublicSubnet1Cidr:
     Type: String
     Default: 10.0.1.0/24
   PublicSubnet2Cidr:
     Type: String
     Default: 10.0.2.0/24
-
   PrivateSubnet1Cidr:
     Type: String
     Default: 10.0.101.0/24
   PrivateSubnet2Cidr:
     Type: String
     Default: 10.0.102.0/24
-
-  AzA:
-    Type: String
-    Default: "a"
-  AzB:
-    Type: String
-    Default: "b"
-
   EnableNatGateways:
     Type: String
     Default: "false"
@@ -43,10 +33,13 @@ Resources:
       CidrBlock: !Ref VpcCidr
       EnableDnsSupport: true
       EnableDnsHostnames: true
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-vpc" }]
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vpc"
 
   Igw:
     Type: AWS::EC2::InternetGateway
+
   IgwAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
@@ -59,8 +52,10 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: !Ref PublicSubnet1Cidr
       MapPublicIpOnLaunch: true
-      AvailabilityZone: !Sub "${AWS::Region}${AzA}"
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-public-a" }]
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-0"
 
   PublicSubnet2:
     Type: AWS::EC2::Subnet
@@ -68,8 +63,10 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: !Ref PublicSubnet2Cidr
       MapPublicIpOnLaunch: true
-      AvailabilityZone: !Sub "${AWS::Region}${AzB}"
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-public-b" }]
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-1"
 
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
@@ -77,8 +74,10 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: !Ref PrivateSubnet1Cidr
       MapPublicIpOnLaunch: false
-      AvailabilityZone: !Sub "${AWS::Region}${AzA}"
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-private-a" }]
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-0"
 
   PrivateSubnet2:
     Type: AWS::EC2::Subnet
@@ -86,23 +85,33 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: !Ref PrivateSubnet2Cidr
       MapPublicIpOnLaunch: false
-      AvailabilityZone: !Sub "${AWS::Region}${AzB}"
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-private-b" }]
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-1"
 
   # Route tables públicas → IGW
   PublicRt1:
     Type: AWS::EC2::RouteTable
-    Properties: { VpcId: !Ref VPC }
+    Properties:
+      VpcId: !Ref VPC
+
   PublicRt2:
     Type: AWS::EC2::RouteTable
-    Properties: { VpcId: !Ref VPC }
+    Properties:
+      VpcId: !Ref VPC
 
   PublicRt1Assoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref PublicSubnet1, RouteTableId: !Ref PublicRt1 }
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRt1
+
   PublicRt2Assoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref PublicSubnet2, RouteTableId: !Ref PublicRt2 }
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRt2
 
   PublicDefaultRoute1:
     Type: AWS::EC2::Route
@@ -117,3 +126,87 @@ Resources:
     Properties:
       RouteTableId: !Ref PublicRt2
       DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref Igw
+    DependsOn: IgwAttachment
+
+  # Route tables privadas (solo local; NAT opcional)
+  PrivateRt1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PrivateRt2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PrivateRt1Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRt1
+
+  PrivateRt2Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRt2
+
+  # NAT opcional (apagado por defecto)
+  EipNat1:
+    Condition: UseNat
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway1:
+    Condition: UseNat
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EipNat1.AllocationId
+      SubnetId: !Ref PublicSubnet1
+
+  EipNat2:
+    Condition: UseNat
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway2:
+    Condition: UseNat
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EipNat2.AllocationId
+      SubnetId: !Ref PublicSubnet2
+
+  PrivateDefaultRoute1:
+    Condition: UseNat
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRt1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateDefaultRoute2:
+    Condition: UseNat
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRt2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+Outputs:
+  VpcId:
+    Value: !Ref VPC
+  PublicSubnet1Id:
+    Value: !Ref PublicSubnet1
+  PublicSubnet2Id:
+    Value: !Ref PublicSubnet2
+  PrivateSubnet1Id:
+    Value: !Ref PrivateSubnet1
+  PrivateSubnet2Id:
+    Value: !Ref PrivateSubnet2
+  NatGateway1Id:
+    Value: !If [UseNat, !Ref NatGateway1, "not-created"]
+  NatGateway2Id:
+    Value: !If [UseNat, !Ref NatGateway2, "not-created"]
