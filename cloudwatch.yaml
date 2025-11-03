@@ -10,16 +10,16 @@ Parameters:
     Description: "Email para recibir alertas (requiere confirmar suscripción)."
   CpuThreshold:
     Type: Number
-    Default: 80
+    Default: "80"
     Description: "Umbral de CPU (%) para disparar la alarma."
   PeriodSeconds:
     Type: Number
-    Default: 300
+    Default: "300"
     AllowedValues: [60, 120, 300, 600, 900]
     Description: "Periodo de evaluación en segundos."
   EvaluationPeriods:
     Type: Number
-    Default: 1
+    Default: "1"
     MinValue: 1
     Description: "Cantidad de periodos para evaluar."
   TopicName:
