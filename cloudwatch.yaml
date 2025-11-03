@@ -1,0 +1,42 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "CloudWatch: alarma CPU > 80% con SNS (email)."
+
+Parameters:
+  InstanceId:
+    Type: String
+    Description: "InstanceId al que se le aplica la alarma."
+  AlertEmail:
+    Type: String
+    Description: "Email para recibir alertas (confirmar subscripción)."
+
+Resources:
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  HighCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "CPU > 80% (5 min)"
+      Namespace: "AWS/EC2"
+      MetricName: "CPUUtilization"
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref InstanceId
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [ !Ref AlarmTopic ]
+      OKActions:    [ !Ref AlarmTopic ]
+
+Outputs:
+  TopicArn: { Value: !Ref AlarmTopic }
