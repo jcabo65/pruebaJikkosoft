@@ -105,4 +105,67 @@ jobs:
         run: |
           set -euo pipefail
           aws cloudformation deploy \
-            --template-
+            --template-file iam.yaml \
+            --stack-name ClouxterIAMStack \
+            --parameter-overrides S3BucketName=${{ env.S3_BUCKET_NAME }} \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      # ---------- EC2 ----------
+      - name: Validate EC2 template
+        run: aws cloudformation validate-template --template-body file://ec2-instances.yaml
+
+      - name: Deploy EC2 stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws cloudformation deploy \
+            --template-file ec2-instances.yaml \
+            --stack-name ClouxterEC2Stack \
+            --parameter-overrides \
+              VpcId=${{ env.VPC_ID }} \
+              PublicSubnet1Id=${{ env.PUB_SUBNET_1 }} \
+              PrivateSubnet1Id=${{ env.PRIV_SUBNET_1 }} \
+              InstanceType=t3.micro \
+              EnableSSH=false \
+              AdminCidr=0.0.0.0/0 \
+              S3BucketName=${{ env.S3_BUCKET_NAME }} \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Capture EC2 outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name ClouxterEC2Stack --query 'Stacks[0].Outputs[?OutputKey==`PublicInstanceId`].OutputValue' --output text)
+          echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
+          echo "INSTANCE_ID=$INSTANCE_ID"
+
+      # ---------- CloudWatch (alarma CPU + SNS) ----------
+      - name: Validate CloudWatch template
+        run: aws cloudformation validate-template --template-body file://cloudwatch.yaml
+
+      - name: Deploy CloudWatch stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws cloudformation deploy \
+            --template-file cloudwatch.yaml \
+            --stack-name ClouxterMonitoringStack \
+            --parameter-overrides \
+              InstanceId=${{ env.INSTANCE_ID }} \
+              AlertEmail=jcabo65@gmail.com \
+            --no-fail-on-empty-changeset
+
+      # ---------- Debug ----------
+      - name: Dump CFN events on failure
+        if: failure()
+        shell: bash
+        run: |
+          for s in ClouxterVPCStack ClouxterS3Stack ClouxterIAMStack ClouxterEC2Stack ClouxterMonitoringStack; do
+            echo "::group::Events for $s"
+            aws cloudformation describe-stack-events --stack-name "$s" \
+              --query "reverse(StackEvents)[?contains(ResourceStatus,'FAILED') || contains(ResourceStatus,'ROLLBACK')].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
+              --output table || true
+            echo "::endgroup::"
+          done
