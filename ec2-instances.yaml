@@ -19,7 +19,7 @@ Parameters:
     Type: String
     Default: 0.0.0.0/0
   KeyName:
-    Type: AWS::EC2::KeyPair::KeyName
+    Type: String
     Default: ""
     Description: "Optional. If set, allows SSH auth with this key pair."
   AmiId:
