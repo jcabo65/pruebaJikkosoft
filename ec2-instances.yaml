@@ -142,7 +142,7 @@ Resources:
           systemctl enable --now httpd
 
           # Test opcional de S3 (si S3BucketName no es vacio)
-          BUCKET="$S3BucketName"
+          BUCKET="$$S3BucketName"
           if [ -n "$BUCKET" ]; then
             echo "from public ec2" > /tmp/hello-public.txt
             aws s3 cp /tmp/hello-public.txt "s3://${BUCKET}/sample/hello-from-ec2.txt" || true
