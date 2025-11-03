@@ -1,10 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "S3 bucket with versioning, SSE-S3, TLS-only, and 30d transition to STANDARD_IA."
+Description: "S3 con versioning, SSE-S3, TLS-only y lifecycle 30d."
 
 Parameters:
   BucketName:
     Type: String
-    Description: "Globally-unique, lowercase bucket name."
+    Description: "Nombre único (minúsculas)."
 
 Resources:
   AppBucket:
@@ -20,8 +20,7 @@ Resources:
         Status: Enabled
       BucketEncryption:
         ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
       LifecycleConfiguration:
         Rules:
           - Id: CurrentToIA30d
@@ -29,8 +28,6 @@ Resources:
             Transitions:
               - StorageClass: STANDARD_IA
                 TransitionInDays: 30
-            AbortIncompleteMultipartUpload:
-              DaysAfterInitiation: 7
 
   BucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -51,5 +48,3 @@ Resources:
 
 Outputs:
   BucketNameOut: { Value: !Ref AppBucket }
-  BucketArn:     { Value: !GetAtt AppBucket.Arn }
-
