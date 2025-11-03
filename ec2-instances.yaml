@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "EC2: 1 pública (web/bastión) + 1 privada. SSM + SGs con reglas exigida."
+Description: "EC2: 1 publica (web/bastion) + 1 privada. SSM + SGs con reglas exigidas."
 
 Parameters:
   VpcId:
@@ -19,8 +19,8 @@ Parameters:
     Type: String
     Default: 0.0.0.0/0
   AmiId:
-    Type: String
-    Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64'
   S3BucketName:
     Type: String
     Default: ""
@@ -29,11 +29,11 @@ Conditions:
   OpenSSH: !Equals [!Ref EnableSSH, "true"]
 
 Resources:
-  # SG pública: HTTP público + SSH opcional desde AdminCidr
+  # SG publica: HTTP publico + SSH opcional desde AdminCidr
   PublicInstanceSG:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: "SG pública - HTTP y (opcional) SSH desde Internet"
+      GroupDescription: "SG publica - HTTP y SSH opcional desde Internet"
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -54,11 +54,11 @@ Resources:
       ToPort: 22
       CidrIp: !Ref AdminCidr
 
-  # SG privada: SSH SOLO desde la SG pública
+  # SG privada: SSH SOLO desde la SG publica
   PrivateInstanceSG:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: "SG privada - SSH solo desde la instancia pública"
+      GroupDescription: "SG privada - SSH solo desde la instancia publica"
       VpcId: !Ref VpcId
       SecurityGroupEgress:
         - IpProtocol: -1
@@ -73,7 +73,7 @@ Resources:
       ToPort: 22
       SourceSecurityGroupId: !Ref PublicInstanceSG
 
-  # Role + InstanceProfile: SSM + acceso S3 opcional (al bucket indicado)
+  # Role + InstanceProfile: SSM + acceso S3 opcional
   Ec2Role:
     Type: AWS::IAM::Role
     Properties:
@@ -104,7 +104,7 @@ Resources:
     Type: AWS::IAM::InstanceProfile
     Properties: { Roles: [ !Ref Ec2Role ] }
 
-  # Instancia pública (web/bastión)
+  # Instancia publica (web/bastion)
   EC2Public:
     Type: AWS::EC2::Instance
     DependsOn: Ec2InstanceProfile
@@ -126,7 +126,7 @@ Resources:
         systemctl enable --now httpd
       Tags: [ { Key: Name, Value: PublicInstance } ]
 
-  # Instancia privada (SSH solo desde la pública)
+  # Instancia privada (SSH solo desde la publica)
   EC2Private:
     Type: AWS::EC2::Instance
     DependsOn: Ec2InstanceProfile
@@ -151,5 +151,6 @@ Outputs:
     Value: !Ref PublicInstanceSG
   PrivateInstanceSgId:
     Value: !Ref PrivateInstanceSG
+
 
 
