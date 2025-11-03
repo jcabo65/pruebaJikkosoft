@@ -1,0 +1,126 @@
+name: Deploy All
+
+on:
+  workflow_dispatch: {}         # <- botón "Run workflow" en la pestaña Actions
+  push:                         # <- corre con cualquier push (sin filtros)
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  deploy-all:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      # ---------- Utils ----------
+      - name: Set S3 bucket name
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="${{ vars.S3_BUCKET_NAME }}"
+          if [ -z "${BASE}" ]; then
+            BASE="clouxter-${GITHUB_REPOSITORY_OWNER}-${GITHUB_RUN_ID}"
+          fi
+          BUCKET=$(echo "$BASE" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')
+          echo "S3_BUCKET_NAME=$BUCKET" >> "$GITHUB_ENV"
+          echo "Usando bucket: $BUCKET"
+
+      # ---------- VPC ----------
+      - name: Validate VPC Template
+        run: aws cloudformation validate-template --template-body file://vpc-subnets.yaml
+
+      - name: Deploy VPC Stack (Free Tier: NAT off)
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws cloudformation deploy \
+            --template-file vpc-subnets.yaml \
+            --stack-name ClouxterVPCStack \
+            --parameter-overrides EnableNatGateways=false \
+            --no-fail-on-empty-changeset
+
+      - name: Capture VPC outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          VPC_ID=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query 'Stacks[0].Outputs[?OutputKey==`VpcId`].OutputValue' --output text)
+          PUB_SUBNET_1=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query 'Stacks[0].Outputs[?OutputKey==`PublicSubnet1Id`].OutputValue' --output text)
+          PRIV_SUBNET_1=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query 'Stacks[0].Outputs[?OutputKey==`PrivateSubnet1Id`].OutputValue' --output text)
+          echo "VPC_ID=$VPC_ID" >> "$GITHUB_ENV"
+          echo "PUB_SUBNET_1=$PUB_SUBNET_1" >> "$GITHUB_ENV"
+          echo "PRIV_SUBNET_1=$PRIV_SUBNET_1" >> "$GITHUB_ENV"
+
+      # ---------- S3 ----------
+      - name: Validate S3 Template
+        run: aws cloudformation validate-template --template-body file://s3-bucket.yaml
+
+      - name: Deploy S3 Stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws cloudformation deploy \
+            --template-file s3-bucket.yaml \
+            --stack-name ClouxterS3Stack \
+            --parameter-overrides BucketName=${{ env.S3_BUCKET_NAME }} \
+            --no-fail-on-empty-changeset
+
+      # ---------- IAM (usuario programático) ----------
+      - name: Validate IAM Template
+        run: aws cloudformation validate-template --template-body file://iam.yaml
+
+      - name: Deploy IAM Stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws cloudformation deploy \
+            --template-file iam.yaml \
+            --stack-name ClouxterIAMStack \
+            --parameter-overrides S3BucketName=${{ env.S3_BUCKET_NAME }} \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      # ---------- EC2 ----------
+      - name: Validate EC2 Template
+        run: aws cloudformation validate-template --template-body file://ec2-instances.yaml
+
+      - name: Deploy EC2 Stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws cloudformation deploy \
+            --template-file ec2-instances.yaml \
+            --stack-name ClouxterEC2Stack \
+            --parameter-overrides \
+              VpcId=${{ env.VPC_ID }} \
+              PublicSubnet1Id=${{ env.PUB_SUBNET_1 }} \
+              PrivateSubnet1Id=${{ env.PRIV_SUBNET_1 }} \
+              InstanceType=t3.micro \
+              EnableSSH=false \
+              AdminCidr=0.0.0.0/0 \
+              S3BucketName=${{ env.S3_BUCKET_NAME }} \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Capture EC2 outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name ClouxterEC2Stack --query 'Stacks[0].Outputs[?OutputKey==`PublicInstanceId`].OutputValue' --output text)
+          echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
+          echo "INSTANCE_ID=$INSTANCE_ID"
+
+      # ---------- CloudWatch (alarma CPU + SNS) ----------
+      - name: Validate CloudWatch Template
+        run: aws cloudformation validate-template --template-body file://cloudwatch.yaml
+
+      - name: Deploy CloudWatch Stack
+        she
