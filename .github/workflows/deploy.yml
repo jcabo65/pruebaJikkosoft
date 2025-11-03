@@ -28,7 +28,7 @@ jobs:
           set -euo pipefail
           BASE="${{ vars.S3_BUCKET_NAME }}"
           if [ -z "${BASE}" ]; then
-            BASE="Jikkosoft-${GITHUB_REPOSITORY_OWNER}-${GITHUB_RUN_ID}"
+            BASE="jikkosoft-${GITHUB_REPOSITORY_OWNER}-${GITHUB_RUN_ID}"
           fi
           BUCKET=$(echo "$BASE" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')
           echo "S3_BUCKET_NAME=$BUCKET" >> "$GITHUB_ENV"
@@ -43,17 +43,12 @@ jobs:
         run: |
           set -euo pipefail
           STACK=JikkosoftVPCStack
-
-          # Si existe y está en ROLLBACK_*, lo eliminamos para permitir recreación
           STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK" --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo "NOTFOUND")
-          if [[ "$STATUS" == "ROLLBACK_COMPLETE" ]] || [[ "$STATUS" == "ROLLBACK_FAILED" ]]; then
+          if [[ "$STATUS" == "ROLLBACK_COMPLETE" || "$STATUS" == "ROLLBACK_FAILED" ]]; then
             echo "Stack $STACK en estado $STATUS. Eliminando..."
             aws cloudformation delete-stack --stack-name "$STACK"
             aws cloudformation wait stack-delete-complete --stack-name "$STACK"
-            echo "Stack $STACK eliminado."
           fi
-
-          echo "Desplegando $STACK..."
           set +e
           aws cloudformation deploy \
             --template-file vpc-subnets.yaml \
@@ -62,7 +57,6 @@ jobs:
             --no-fail-on-empty-changeset
           CODE=$?
           set -e
-
           if [[ $CODE -ne 0 ]]; then
             echo "Falló el deploy de $STACK. Últimos eventos:"
             aws cloudformation describe-stack-events --stack-name "$STACK" \
@@ -96,50 +90,96 @@ jobs:
             --parameter-overrides BucketName=${{ env.S3_BUCKET_NAME }} \
             --no-fail-on-empty-changeset
 
+      - name: Upload sample file to S3 (requisito prueba #3)
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf "hello from Jikkosoft\n" | aws s3 cp - "s3://${S3_BUCKET_NAME}/sample/hello.txt"
+          aws s3 ls "s3://${S3_BUCKET_NAME}/sample/"
+
       # ---------- IAM (usuario programático) ----------
       - name: Validate IAM template
         run: aws cloudformation validate-template --template-body file://iam.yaml
 
-      - name: Deploy IAM stack
+      - name: Deploy IAM stack (resilient)
         shell: bash
         run: |
           set -euo pipefail
+          STACK=JikkosoftIAMStack
+          STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK" --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo "NOTFOUND")
+          if [[ "$STATUS" == "ROLLBACK_COMPLETE" || "$STATUS" == "ROLLBACK_FAILED" ]]; then
+            echo "Stack $STACK en estado $STATUS. Eliminando..."
+            aws cloudformation delete-stack --stack-name "$STACK"
+            aws cloudformation wait stack-delete-complete --stack-name "$STACK"
+          fi
+          set +e
           aws cloudformation deploy \
             --template-file iam.yaml \
-            --stack-name JikkosoftIAMStack \
-            --parameter-overrides S3BucketName=${{ env.S3_BUCKET_NAME }} \
+            --stack-name "$STACK" \
+            --parameter-overrides \
+              S3BucketName=${{ env.S3_BUCKET_NAME }} \
+              CreateProgrammaticUser=true \
+              CreateAccessKey=true \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
+          CODE=$?
+          set -e
+          echo "Últimos eventos de $STACK:"
+          aws cloudformation describe-stack-events --stack-name "$STACK" \
+            --query "reverse(StackEvents)[0:40].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
+            --output table || true
+          exit $CODE
 
       # ---------- EC2 ----------
       - name: Validate EC2 template
         run: aws cloudformation validate-template --template-body file://ec2-instances.yaml
 
-      - name: Deploy EC2 stack
+      - name: Deploy EC2 stack (Enable SSH para la prueba)
         shell: bash
         run: |
           set -euo pipefail
+          STACK=JikkosoftEC2Stack
+          STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK" --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo "NOTFOUND")
+          if [[ "$STATUS" == "ROLLBACK_COMPLETE" || "$STATUS" == "ROLLBACK_FAILED" ]]; then
+            echo "Stack $STACK en estado $STATUS. Eliminando..."
+            aws cloudformation delete-stack --stack-name "$STACK"
+            aws cloudformation wait stack-delete-complete --stack-name "$STACK"
+          fi
+
+          PARAMS="VpcId=${{ env.VPC_ID }} PublicSubnet1Id=${{ env.PUB_SUBNET_1 }} PrivateSubnet1Id=${{ env.PRIV_SUBNET_1 }} InstanceType=t3.micro EnableSSH=true AdminCidr=0.0.0.0/0 S3BucketName=${{ env.S3_BUCKET_NAME }}"
+          # Si quieres usar un KeyPair existente, define repo variable KEY_NAME y se añade:
+          if [ -n "${{ vars.KEY_NAME }}" ]; then
+            PARAMS="$PARAMS KeyName=${{ vars.KEY_NAME }}"
+          fi
+
+          set +e
           aws cloudformation deploy \
             --template-file ec2-instances.yaml \
-            --stack-name JikkosoftEC2Stack \
-            --parameter-overrides \
-              VpcId=${{ env.VPC_ID }} \
-              PublicSubnet1Id=${{ env.PUB_SUBNET_1 }} \
-              PrivateSubnet1Id=${{ env.PRIV_SUBNET_1 }} \
-              InstanceType=t3.micro \
-              EnableSSH=false \
-              AdminCidr=0.0.0.0/0 \
-              S3BucketName=${{ env.S3_BUCKET_NAME }} \
+            --stack-name "$STACK" \
+            --parameter-overrides $PARAMS \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
+          CODE=$?
+          set -e
+          echo "Últimos eventos de $STACK:"
+          aws cloudformation describe-stack-events --stack-name "$STACK" \
+            --query "reverse(StackEvents)[0:40].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
+            --output table || true
+          exit $CODE
 
       - name: Capture EC2 outputs
         shell: bash
         run: |
           set -euo pipefail
           INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name JikkosoftEC2Stack --query 'Stacks[0].Outputs[?OutputKey==`PublicInstanceId`].OutputValue' --output text)
+          PUBLIC_IP=$(aws cloudformation describe-stacks --stack-name JikkosoftEC2Stack --query 'Stacks[0].Outputs[?OutputKey==`PublicInstancePublicIp`].OutputValue' --output text)
+          PRIVATE_IP=$(aws cloudformation describe-stacks --stack-name JikkosoftEC2Stack --query 'Stacks[0].Outputs[?OutputKey==`PrivateInstancePrivateIp`].OutputValue' --output text)
           echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
+          echo "PUBLIC_IP=$PUBLIC_IP" >> "$GITHUB_ENV"
+          echo "PRIVATE_IP=$PRIVATE_IP" >> "$GITHUB_ENV"
           echo "INSTANCE_ID=$INSTANCE_ID"
+          echo "PUBLIC_IP=$PUBLIC_IP"
+          echo "PRIVATE_IP=$PRIVATE_IP"
 
       # ---------- CloudWatch (alarma CPU + SNS) ----------
       - name: Validate CloudWatch template
