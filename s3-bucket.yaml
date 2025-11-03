@@ -1,10 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "Bucket S3 con cifrado, bloqueo público y Lifecycle a STANDARD_IA a los 30 días."
+Description: "Bucket S3 con cifrado, bloqueo público y Lifecycle a STANDARD_IA a los 30 días (incluye noncurrent y cleanup)."
 
 Parameters:
   BucketName:
     Type: String
-    Description: "Nombre único del bucket (requerido)."
+    Description: "Nombre único del bucket (requerido, en minúsculas)."
 
 Resources:
   AppBucket:
@@ -24,12 +24,16 @@ Resources:
               SSEAlgorithm: AES256
       LifecycleConfiguration:
         Rules:
-          # Regla solicitada por la prueba:
           - Id: CurrentToStandardIA
             Status: Enabled
             Transitions:
               - StorageClass: STANDARD_IA
                 TransitionInDays: 30
+            NoncurrentVersionTransitions:
+              - StorageClass: STANDARD_IA
+                NoncurrentDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
 
   BucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -47,9 +51,10 @@ Resources:
               - !Sub "arn:aws:s3:::${AppBucket}/*"
             Condition:
               Bool:
-                aws:SecureTransport: false
+                aws:SecureTransport: "false"
 
 Outputs:
-  BucketNameOut: { Value: !Ref AppBucket }
-  BucketArn:     { Value: !GetAtt AppBucket.Arn }
-
+  BucketNameOut:
+    Value: !Ref AppBucket
+  BucketArn:
+    Value: !GetAtt AppBucket.Arn
