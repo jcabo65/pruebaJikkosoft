@@ -140,13 +140,13 @@ Resources:
           dnf -y install httpd awscli
           echo '<h1>Public OK</h1>' > /var/www/html/index.html
           systemctl enable --now httpd
-
+          
           # Test opcional de S3 (si S3BucketName no es vacio)
-          BUCKET='${S3BucketName}'
+          BUCKET="${S3BucketName}"
           if [ -n "$BUCKET" ]; then
             echo "from public ec2" > /tmp/hello-public.txt
-            aws s3 cp /tmp/hello-public.txt "s3://${BUCKET}/sample/hello-from-ec2.txt" || true
-            aws s3 ls "s3://${BUCKET}/sample/" || true
+            aws s3 cp /tmp/hello-public.txt "s3://$BUCKET/sample/hello-from-ec2.txt" || true
+            aws s3 ls "s3://$BUCKET/sample/" || true
           fi
       Tags:
         - Key: Name
