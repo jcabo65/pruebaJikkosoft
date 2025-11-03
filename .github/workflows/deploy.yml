@@ -28,7 +28,7 @@ jobs:
           set -euo pipefail
           BASE="${{ vars.S3_BUCKET_NAME }}"
           if [ -z "${BASE}" ]; then
-            BASE="clouxter-${GITHUB_REPOSITORY_OWNER}-${GITHUB_RUN_ID}"
+            BASE="Jikkosoft-${GITHUB_REPOSITORY_OWNER}-${GITHUB_RUN_ID}"
           fi
           BUCKET=$(echo "$BASE" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')
           echo "S3_BUCKET_NAME=$BUCKET" >> "$GITHUB_ENV"
@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          STACK=ClouxterVPCStack
+          STACK=JikkosoftVPCStack
 
           # Si existe y está en ROLLBACK_*, lo eliminamos para permitir recreación
           STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK" --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo "NOTFOUND")
@@ -75,9 +75,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VPC_ID=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query 'Stacks[0].Outputs[?OutputKey==`VpcId`].OutputValue' --output text)
-          PUB_SUBNET_1=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query 'Stacks[0].Outputs[?OutputKey==`PublicSubnet1Id`].OutputValue' --output text)
-          PRIV_SUBNET_1=$(aws cloudformation describe-stacks --stack-name ClouxterVPCStack --query 'Stacks[0].Outputs[?OutputKey==`PrivateSubnet1Id`].OutputValue' --output text)
+          VPC_ID=$(aws cloudformation describe-stacks --stack-name JikkosoftVPCStack --query 'Stacks[0].Outputs[?OutputKey==`VpcId`].OutputValue' --output text)
+          PUB_SUBNET_1=$(aws cloudformation describe-stacks --stack-name JikkosoftVPCStack --query 'Stacks[0].Outputs[?OutputKey==`PublicSubnet1Id`].OutputValue' --output text)
+          PRIV_SUBNET_1=$(aws cloudformation describe-stacks --stack-name JikkosoftVPCStack --query 'Stacks[0].Outputs[?OutputKey==`PrivateSubnet1Id`].OutputValue' --output text)
           echo "VPC_ID=$VPC_ID" >> "$GITHUB_ENV"
           echo "PUB_SUBNET_1=$PUB_SUBNET_1" >> "$GITHUB_ENV"
           echo "PRIV_SUBNET_1=$PRIV_SUBNET_1" >> "$GITHUB_ENV"
@@ -92,7 +92,7 @@ jobs:
           set -euo pipefail
           aws cloudformation deploy \
             --template-file s3-bucket.yaml \
-            --stack-name ClouxterS3Stack \
+            --stack-name JikkosoftS3Stack \
             --parameter-overrides BucketName=${{ env.S3_BUCKET_NAME }} \
             --no-fail-on-empty-changeset
 
@@ -106,7 +106,7 @@ jobs:
           set -euo pipefail
           aws cloudformation deploy \
             --template-file iam.yaml \
-            --stack-name ClouxterIAMStack \
+            --stack-name JikkosoftIAMStack \
             --parameter-overrides S3BucketName=${{ env.S3_BUCKET_NAME }} \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
@@ -121,7 +121,7 @@ jobs:
           set -euo pipefail
           aws cloudformation deploy \
             --template-file ec2-instances.yaml \
-            --stack-name ClouxterEC2Stack \
+            --stack-name JikkosoftEC2Stack \
             --parameter-overrides \
               VpcId=${{ env.VPC_ID }} \
               PublicSubnet1Id=${{ env.PUB_SUBNET_1 }} \
@@ -137,7 +137,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name ClouxterEC2Stack --query 'Stacks[0].Outputs[?OutputKey==`PublicInstanceId`].OutputValue' --output text)
+          INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name JikkosoftEC2Stack --query 'Stacks[0].Outputs[?OutputKey==`PublicInstanceId`].OutputValue' --output text)
           echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
           echo "INSTANCE_ID=$INSTANCE_ID"
 
@@ -151,7 +151,7 @@ jobs:
           set -euo pipefail
           aws cloudformation deploy \
             --template-file cloudwatch.yaml \
-            --stack-name ClouxterMonitoringStack \
+            --stack-name JikkosoftMonitoringStack \
             --parameter-overrides \
               InstanceId=${{ env.INSTANCE_ID }} \
               AlertEmail=jcabo65@gmail.com \
@@ -162,7 +162,7 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          for s in ClouxterVPCStack ClouxterS3Stack ClouxterIAMStack ClouxterEC2Stack ClouxterMonitoringStack; do
+          for s in JikkosoftVPCStack JikkosoftS3Stack JikkosoftIAMStack JikkosoftEC2Stack JikkosoftMonitoringStack; do
             echo "::group::Events for $s"
             aws cloudformation describe-stack-events --stack-name "$s" \
               --query "reverse(StackEvents)[?contains(ResourceStatus,'FAILED') || contains(ResourceStatus,'ROLLBACK')].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
