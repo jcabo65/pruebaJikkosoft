@@ -35,6 +35,9 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ github.event.inputs.region || 'us-east-1' }}
 
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
       - name: Init vars
         shell: bash
         run: |
@@ -43,6 +46,7 @@ jobs:
           REGION="${{ github.event.inputs.region }}"
           SKIP_IAM="${{ github.event.inputs.skip_iam }}"
           DRY_RUN="${{ github.event.inputs.dry_run }}"
+
           if [[ -z "${PREFIX}" ]]; then PREFIX="Jikkosoft"; fi
           if [[ -z "${REGION}" ]]; then REGION="us-east-1"; fi
           if [[ -z "${SKIP_IAM}" ]]; then SKIP_IAM="false"; fi
@@ -62,7 +66,7 @@ jobs:
           echo "Plan de destroy:"
           echo "  Region: $REGION"
           echo "  Prefix: $PREFIX"
-          echo "  Orden:  ${PREFIX}MonitoringStack -> ${PREFIX}EC2Stack -> ${PREFIX}IAMStack -> ${PREFIX}S3Stack -> ${PREFIX}VPCStack"
+          echo "  Orden:  ${PREFIX}MonitoringStack → ${PREFIX}EC2Stack → ${PREFIX}IAMStack → ${PREFIX}S3Stack → ${PREFIX}VPCStack"
           echo "  Skip IAM: $SKIP_IAM"
           echo "  Dry run:  $DRY_RUN"
 
@@ -109,8 +113,11 @@ jobs:
           bucket_from_stack() {
             local stack="$1"
             if stack_exists "$stack"; then
-              aws cloudformation describe-stacks --stack-name "$stack" --region "${AWS_REGION}" \
-                --query "Stacks[0].Outputs[?OutputKey=='BucketNameOut'].OutputValue" --output text 2>/dev/null || echo ""
+              aws cloudformation describe-stacks \
+                --stack-name "$stack" \
+                --region "${AWS_REGION}" \
+                --query "Stacks[0].Outputs[?OutputKey=='BucketNameOut'].OutputValue" \
+                --output text 2>/dev/null | grep -v '^None$' || echo ""
             else
               echo ""
             fi
@@ -122,28 +129,29 @@ jobs:
               echo "No bucket to empty."
               return 0
             fi
-            echo "Emptying bucket (versions + delete markers): s3://$bucket"
 
-            # Delete all versions
-            while true; do
-              mapfile -t LINES < <(aws s3api list-object-versions --bucket "$bucket" --region "${AWS_REGION}" \
-                --query 'Versions[].{K:Key,V:VersionId}' --output text 2>/dev/null || echo "")
-              [[ ${#LINES[@]} -eq 0 ]] && break
-              for line in "${LINES[@]}"; do
-                key="${line%$'\t'*}"
-                vid="${line#*$'\t'}"
+            echo "Emptying versioned bucket: s3://$bucket"
+
+            local is_truncated=true
+            while [[ "$is_truncated" == "true" ]]; do
+              local output
+              output=$(aws s3api list-object-versions \
+                --bucket "$bucket" \
+                --region "${AWS_REGION}" \
+                --max-items 1000 \
+                --output json 2>/dev/null || echo '{"IsTruncated": false}')
+
+              is_truncated=$(echo "$output" | jq -r '.IsTruncated')
+
+              # Borrar versiones
+              echo "$output" | jq -r '.Versions[]? | "\(.Key)\t\(.VersionId)"' | while IFS=$'\t' read -r key vid; do
+                [[ -n "$key" && -n "$vid" ]] || continue
                 aws_cmd s3api delete-object --bucket "$bucket" --key "$key" --version-id "$vid" || true
               done
-            done
 
-            # Delete delete-markers
-            while true; do
-              mapfile -t LINES < <(aws s3api list-object-versions --bucket "$bucket" --region "${AWS_REGION}" \
-                --query 'DeleteMarkers[].{K:Key,V:VersionId}' --output text 2>/dev/null || echo "")
-              [[ ${#LINES[@]} -eq 0 ]] && break
-              for line in "${LINES[@]}"; do
-                key="${line%$'\t'*}"
-                vid="${line#*$'\t'}"
+              # Borrar delete markers
+              echo "$output" | jq -r '.DeleteMarkers[]? | "\(.Key)\t\(.VersionId)"' | while IFS=$'\t' read -r key vid; do
+                [[ -n "$key" && -n "$vid" ]] || continue
                 aws_cmd s3api delete-object --bucket "$bucket" --key "$key" --version-id "$vid" || true
               done
             done
