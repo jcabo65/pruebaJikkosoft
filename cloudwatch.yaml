@@ -4,39 +4,36 @@ Description: "CloudWatch: alarma CPU > umbral con SNS (email)."
 Parameters:
   InstanceId:
     Type: String
-    Description: "InstanceId al que se le aplica la alarma."
-
+    Description: "EC2 InstanceId."
   AlertEmail:
     Type: String
-    Description: "Email para recibir alertas (requiere confirmar suscripción)."
-
+    Description: "Email para alertas (requiere confirmación)."
   CpuThreshold:
     Type: Number
-    Default: "80"                     
-    Description: "Umbral de CPU (%) para disparar la alarma."
-
+    Default: "80"           # <= como string
+    Description: "Umbral de CPU (%)."
   PeriodSeconds:
     Type: Number
-    Default: "300"                    
-    AllowedValues: ["60", "120", "300", "600", "900"]  
-    Description: "Periodo de evaluación en segundos."
-
+    Default: "300"          # <= como string
+    AllowedValues: ["60","120","300","600","900"]   # <= todos como string
+    Description: "Periodo (s)."
   EvaluationPeriods:
     Type: Number
-    Default: "1"                      
-    MinValue: "1"                     
-    Description: "Cantidad de periodos para evaluar."
-
+    Default: "1"            # <= como string
+    Description: "Cantidad de periodos."
   TopicName:
     Type: String
-    Default: !Sub "${AWS::StackName}-alerts"
-    Description: "Nombre del tópico SNS."
+    Default: ""             # <= sin !Sub; vacío = nombre auto
+    Description: "Opcional: si vacío, AWS auto-nombra el tópico."
+
+Conditions:
+  HasTopicName: !Not [!Equals [!Ref TopicName, ""]]
 
 Resources:
   AlarmTopic:
     Type: AWS::SNS::Topic
     Properties:
-      TopicName: !Ref TopicName
+      TopicName: !If [HasTopicName, !Ref TopicName, !Ref "AWS::NoValue"]
 
   AlarmSubscription:
     Type: AWS::SNS::Subscription
@@ -48,7 +45,6 @@ Resources:
   HighCpuAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub "${AWS::StackName}-cpu-gt${CpuThreshold}"
       AlarmDescription: !Sub "CPU > ${CpuThreshold}% (${PeriodSeconds}s)"
       Namespace: "AWS/EC2"
       MetricName: "CPUUtilization"
@@ -59,7 +55,6 @@ Resources:
       Unit: Percent
       Period: !Ref PeriodSeconds
       EvaluationPeriods: !Ref EvaluationPeriods
-      DatapointsToAlarm: !Ref EvaluationPeriods
       Threshold: !Ref CpuThreshold
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
@@ -67,7 +62,5 @@ Resources:
       OKActions:    [ !Ref AlarmTopic ]
 
 Outputs:
-  TopicArn:
-    Value: !Ref AlarmTopic
-  AlarmName:
-    Value: !Ref HighCpuAlarm
+  TopicArn:   { Value: !Ref AlarmTopic }
+  AlarmName:  { Value: !Ref HighCpuAlarm }
